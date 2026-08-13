@@ -74,6 +74,126 @@ function projectedWins(team: Team, fromWeek: number) {
   }, 0);
 }
 
+const unavailableWeight = -1_000_000;
+
+type DecisionMetric = {
+  currentProbability: number;
+  planStrength: number;
+};
+
+function maximumAssignmentWeight(weights: number[][]) {
+  const rowCount = weights.length;
+  if (rowCount === 0) return 0;
+
+  const columnCount = weights[0].length;
+  if (columnCount < rowCount) return null;
+
+  const maximumWeight = Math.max(...weights.flat());
+  const costs = weights.map((row) => row.map((weight) => maximumWeight - weight));
+  const rowPotential = Array(rowCount + 1).fill(0) as number[];
+  const columnPotential = Array(columnCount + 1).fill(0) as number[];
+  const matchedRow = Array(columnCount + 1).fill(0) as number[];
+  const previousColumn = Array(columnCount + 1).fill(0) as number[];
+
+  for (let row = 1; row <= rowCount; row += 1) {
+    matchedRow[0] = row;
+    let currentColumn = 0;
+    const minimumCost = Array(columnCount + 1).fill(Number.POSITIVE_INFINITY) as number[];
+    const usedColumn = Array(columnCount + 1).fill(false) as boolean[];
+
+    do {
+      usedColumn[currentColumn] = true;
+      const currentRow = matchedRow[currentColumn];
+      let nextColumn = 0;
+      let delta = Number.POSITIVE_INFINITY;
+
+      for (let column = 1; column <= columnCount; column += 1) {
+        if (usedColumn[column]) continue;
+
+        const reducedCost = costs[currentRow - 1][column - 1]
+          - rowPotential[currentRow]
+          - columnPotential[column];
+        if (reducedCost < minimumCost[column]) {
+          minimumCost[column] = reducedCost;
+          previousColumn[column] = currentColumn;
+        }
+        if (minimumCost[column] < delta) {
+          delta = minimumCost[column];
+          nextColumn = column;
+        }
+      }
+
+      for (let column = 0; column <= columnCount; column += 1) {
+        if (usedColumn[column]) {
+          rowPotential[matchedRow[column]] += delta;
+          columnPotential[column] -= delta;
+        } else {
+          minimumCost[column] -= delta;
+        }
+      }
+      currentColumn = nextColumn;
+    } while (matchedRow[currentColumn] !== 0);
+
+    do {
+      const nextColumn = previousColumn[currentColumn];
+      matchedRow[currentColumn] = matchedRow[nextColumn];
+      currentColumn = nextColumn;
+    } while (currentColumn !== 0);
+  }
+
+  let totalWeight = 0;
+  for (let column = 1; column <= columnCount; column += 1) {
+    const row = matchedRow[column];
+    if (row === 0) continue;
+
+    const weight = weights[row - 1][column - 1];
+    if (weight === unavailableWeight) return null;
+    totalWeight += weight;
+  }
+
+  return totalWeight;
+}
+
+function decisionMetricFor(candidate: Team, activeWeek: number, picks: Picks): DecisionMetric | null {
+  const currentGame = getGame(candidate.code, activeWeek);
+  if (!currentGame) return null;
+
+  const currentProbability = estimatedWinProbability(candidate, currentGame);
+  const unavailableTeams = new Set<string>([candidate.code]);
+  let totalLogProbability = Math.log(currentProbability / 100);
+
+  for (const [weekText, teamCode] of Object.entries(picks)) {
+    const week = Number(weekText);
+    if (week === activeWeek) continue;
+    if (teamCode === candidate.code) return null;
+
+    unavailableTeams.add(teamCode);
+    if (week > activeWeek) {
+      const team = teamsByCode.get(teamCode);
+      const game = team && getGame(teamCode, week);
+      if (!team || !game) return null;
+      totalLogProbability += Math.log(estimatedWinProbability(team, game) / 100);
+    }
+  }
+
+  const openWeeks = weeks.filter((week) => week > activeWeek && !picks[week]);
+  const availableTeams = teams.filter((team) => !unavailableTeams.has(team.code));
+  const weights = openWeeks.map((week) => availableTeams.map((team) => {
+    const game = getGame(team.code, week);
+    return game ? Math.log(estimatedWinProbability(team, game) / 100) : unavailableWeight;
+  }));
+  const optimizedFutureWeight = maximumAssignmentWeight(weights);
+  if (optimizedFutureWeight === null) return null;
+
+  totalLogProbability += optimizedFutureWeight;
+  const remainingWeekCount = 19 - activeWeek;
+
+  return {
+    currentProbability,
+    planStrength: Math.exp(totalLogProbability / remainingWeekCount) * 100,
+  };
+}
+
 type GameCellProps = {
   team: Team;
   week: number;
@@ -181,6 +301,26 @@ export default function App() {
     };
   }, [authState]);
 
+  const decisionMetrics = useMemo(() => {
+    const metrics = new Map<string, DecisionMetric | null>();
+    for (const team of teams) {
+      metrics.set(team.code, decisionMetricFor(team, activeWeek, picks));
+    }
+    return metrics;
+  }, [activeWeek, picks]);
+
+  const recommendedTeamCode = useMemo(() => {
+    return [...teams]
+      .filter((team) => decisionMetrics.get(team.code) !== null)
+      .sort((left, right) => {
+        const leftMetric = decisionMetrics.get(left.code)!;
+        const rightMetric = decisionMetrics.get(right.code)!;
+        return rightMetric.planStrength - leftMetric.planStrength
+          || rightMetric.currentProbability - leftMetric.currentProbability
+          || left.rank - right.rank;
+      })[0]?.code;
+  }, [decisionMetrics]);
+
   const filteredTeams = useMemo(() => {
     const query = search.trim().toLowerCase();
 
@@ -192,14 +332,18 @@ export default function App() {
         team.code.toLowerCase().includes(query),
       )
       .sort((left, right) => {
-        const leftGame = getGame(left.code, activeWeek);
-        const rightGame = getGame(right.code, activeWeek);
-        const leftProbability = leftGame ? estimatedWinProbability(left, leftGame) : -1;
-        const rightProbability = rightGame ? estimatedWinProbability(right, rightGame) : -1;
+        const leftMetric = decisionMetrics.get(left.code);
+        const rightMetric = decisionMetrics.get(right.code);
+        const leftPlanStrength = leftMetric?.planStrength ?? -1;
+        const rightPlanStrength = rightMetric?.planStrength ?? -1;
+        const leftProbability = leftMetric?.currentProbability ?? -1;
+        const rightProbability = rightMetric?.currentProbability ?? -1;
 
-        return rightProbability - leftProbability || left.rank - right.rank;
+        return rightPlanStrength - leftPlanStrength
+          || rightProbability - leftProbability
+          || left.rank - right.rank;
       });
-  }, [activeWeek, search]);
+  }, [decisionMetrics, search]);
 
   const pickedWeekByTeam = useMemo(() => {
     return Object.fromEntries(
@@ -214,9 +358,11 @@ export default function App() {
     const scrollContainer = tableScrollRef.current;
     const target = scrollContainer?.querySelector<HTMLElement>(`thead [data-week="${nextWeek}"]`);
     if (scrollContainer && target) {
-      const projectedHeader = scrollContainer.querySelector<HTMLElement>(".projected-header");
-      const frozenWidth = projectedHeader
-        ? projectedHeader.offsetLeft + projectedHeader.offsetWidth
+      const frozenHeader = scrollContainer.querySelector<HTMLElement>(
+        window.innerWidth <= 540 ? ".team-header" : ".decision-header",
+      );
+      const frozenWidth = frozenHeader
+        ? frozenHeader.offsetLeft + frozenHeader.offsetWidth
         : 245;
       scrollContainer.scrollTo({ left: Math.max(0, target.offsetLeft - frozenWidth), behavior: "smooth" });
     }
@@ -353,17 +499,26 @@ export default function App() {
 
         <div className="table-scroll" ref={tableScrollRef}>
           <table>
-            <caption className="sr-only">2026 NFL survivor planning board. Select a matchup cell to save that team as the pick for the week.</caption>
+            <caption className="sr-only">2026 NFL survivor decision board. Teams are ranked by the strongest remaining unique-team plan. Select a matchup cell to save that team as the pick for the week.</caption>
             <thead>
               <tr>
                 <th className="team-header" scope="col">
-                  <span>WEEK {String(activeWeek).padStart(2, "0")} WIN % ↓</span>
+                  <span>WEEK {String(activeWeek).padStart(2, "0")} DECISION ↓</span>
                   <strong>TEAM</strong>
                 </th>
                 <th className="projected-header" scope="col" title={`Games at 65%+ from week ${activeWeek} through week 18`}>
                   <span>PROJECTED</span>
                   <strong>WINS</strong>
                   <small>65%+ LEFT</small>
+                </th>
+                <th
+                  className="decision-header"
+                  scope="col"
+                  title="Average weekly win probability of the strongest remaining plan, with each team used no more than once"
+                >
+                  <span>DECISION</span>
+                  <strong>SCORE</strong>
+                  <small>BEST PATH</small>
                 </th>
                 {weeks.map((week) => (
                   <th key={week} scope="col" className={activeWeek === week ? "active-week" : ""} data-week={week}>
@@ -380,14 +535,17 @@ export default function App() {
               {filteredTeams.map((team) => {
                 const pickedWeek = pickedWeekByTeam[team.code];
                 const remainingProjectedWins = projectedWins(team, activeWeek);
+                const decisionMetric = decisionMetrics.get(team.code);
+                const isRecommended = team.code === recommendedTeamCode;
                 return (
-                  <tr key={team.code} className={pickedWeek ? "used-team-row" : ""}>
+                  <tr key={team.code} className={`${pickedWeek ? "used-team-row" : ""} ${isRecommended ? "recommended-team-row" : ""}`}>
                     <th className="team-cell" scope="row">
                       <div className="team-cell-inner">
                         <span className="rank-number" title={`Power rank ${team.rank}`}>#{String(team.rank).padStart(2, "0")}</span>
                         <span className="team-token" style={{ backgroundColor: team.color }}>{team.code}</span>
                         <span className="team-identity">
                           <strong>{team.city} <b>{team.name}</b></strong>
+                          {isRecommended && <small className="recommendation-badge"><Check size={10} strokeWidth={3} /> Best pick</small>}
                           {pickedWeek && <small><CheckCircle2 size={10} /> Used week {pickedWeek}</small>}
                         </span>
                       </div>
@@ -399,6 +557,18 @@ export default function App() {
                     >
                       <strong>{remainingProjectedWins}</strong>
                       <span>65%+ left</span>
+                    </td>
+                    <td
+                      className={`decision-cell ${isRecommended ? "recommended-decision" : ""}`}
+                      title={decisionMetric
+                        ? `${decisionMetric.planStrength.toFixed(1)}% average weekly win probability for the strongest remaining unique-team plan if ${team.code} is used in week ${activeWeek}. This week's estimate: ${decisionMetric.currentProbability}%.`
+                        : `${team.code} is unavailable in week ${activeWeek} because it has a bye or is reserved in another week.`}
+                      aria-label={decisionMetric
+                        ? `${team.city} ${team.name}: ${decisionMetric.planStrength.toFixed(1)} percent decision score`
+                        : `${team.city} ${team.name}: unavailable for this decision`}
+                    >
+                      <strong>{decisionMetric ? `${decisionMetric.planStrength.toFixed(1)}%` : "—"}</strong>
+                      <span>{decisionMetric ? "plan avg" : "unavailable"}</span>
                     </td>
                     {weeks.map((week) => (
                       <GameCell
