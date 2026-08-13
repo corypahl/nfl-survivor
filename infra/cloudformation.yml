@@ -139,7 +139,7 @@ Resources:
             body: JSON.stringify(body),
           });
 
-          const queryEntry = (owner, entryId) => dynamo.send(new QueryCommand({
+          const queryPicks = (owner) => dynamo.send(new QueryCommand({
             TableName: tableName,
             KeyConditionExpression: "#owner = :owner AND begins_with(#pickKey, :prefix)",
             ExpressionAttributeNames: {
@@ -148,7 +148,7 @@ Resources:
             },
             ExpressionAttributeValues: {
               ":owner": { S: owner },
-              ":prefix": { S: `ENTRY#${entryId}#WEEK#` },
+              ":prefix": { S: "WEEK#" },
             },
             ConsistentRead: true,
           }));
@@ -156,24 +156,22 @@ Resources:
           exports.handler = async (event) => {
             try {
               const owner = event.requestContext?.authorizer?.jwt?.claims?.sub;
-              const entryId = event.pathParameters?.entryId;
               const week = event.pathParameters?.week ? Number(event.pathParameters.week) : null;
 
               if (!owner) return json(401, { message: "Sign-in required." });
-              if (!/^entry-[12]$/.test(entryId || "")) return json(400, { message: "Invalid survivor entry." });
               if (week !== null && (!Number.isInteger(week) || week < 1 || week > 18)) {
                 return json(400, { message: "Week must be between 1 and 18." });
               }
 
               if (event.requestContext.http.method === "GET") {
-                const result = await queryEntry(owner, entryId);
+                const result = await queryPicks(owner);
                 const picks = (result.Items || [])
                   .map((item) => ({ week: Number(item.week.N), teamCode: item.teamCode.S }))
                   .sort((a, b) => a.week - b.week);
                 return json(200, { picks });
               }
 
-              const pickKey = `ENTRY#${entryId}#WEEK#${String(week).padStart(2, "0")}`;
+              const pickKey = `WEEK#${String(week).padStart(2, "0")}`;
 
               if (event.requestContext.http.method === "DELETE") {
                 await dynamo.send(new DeleteItemCommand({
@@ -187,13 +185,13 @@ Resources:
               const teamCode = String(body.teamCode || "").toUpperCase();
               if (!teamCodes.has(teamCode)) return json(400, { message: "Invalid NFL team." });
 
-              const current = await queryEntry(owner, entryId);
+              const current = await queryPicks(owner);
               const duplicate = (current.Items || []).find(
                 (item) => item.teamCode.S === teamCode && Number(item.week.N) !== week,
               );
               if (duplicate) {
                 return json(409, {
-                  message: `${teamCode} was already used in week ${duplicate.week.N} for this entry.`,
+                  message: `${teamCode} was already used in week ${duplicate.week.N}.`,
                 });
               }
 
@@ -202,7 +200,6 @@ Resources:
                 Item: {
                   owner: { S: owner },
                   pickKey: { S: pickKey },
-                  entryId: { S: entryId },
                   week: { N: String(week) },
                   teamCode: { S: teamCode },
                   updatedAt: { S: new Date().toISOString() },
@@ -261,7 +258,7 @@ Resources:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref PicksApi
-      RouteKey: GET /entries/{entryId}/picks
+      RouteKey: GET /picks
       AuthorizationType: JWT
       AuthorizerId: !Ref PicksAuthorizer
       Target: !Join [/, [integrations, !Ref PicksIntegration]]
@@ -270,7 +267,7 @@ Resources:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref PicksApi
-      RouteKey: PUT /entries/{entryId}/picks/{week}
+      RouteKey: PUT /picks/{week}
       AuthorizationType: JWT
       AuthorizerId: !Ref PicksAuthorizer
       Target: !Join [/, [integrations, !Ref PicksIntegration]]
@@ -279,7 +276,7 @@ Resources:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref PicksApi
-      RouteKey: DELETE /entries/{entryId}/picks/{week}
+      RouteKey: DELETE /picks/{week}
       AuthorizationType: JWT
       AuthorizerId: !Ref PicksAuthorizer
       Target: !Join [/, [integrations, !Ref PicksIntegration]]

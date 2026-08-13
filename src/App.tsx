@@ -27,15 +27,10 @@ import {
   loadPicks,
   removePick,
   savePick,
-  type EntryId,
   type Picks,
 } from "./lib/aws";
 
 const weeks = Array.from({ length: 18 }, (_, index) => index + 1);
-const entries: Array<{ id: EntryId; label: string }> = [
-  { id: "entry-1", label: "Entry 1" },
-  { id: "entry-2", label: "Entry 2" },
-];
 const teamsByCode = new Map(teams.map((team) => [team.code, team]));
 const schedule = new Map<string, ScheduledGame>();
 
@@ -131,10 +126,8 @@ function GameCell({ team, week, focused, selected, usedInWeek, saving, onPick }:
 
 export default function App() {
   const [search, setSearch] = useState("");
-  const [conference, setConference] = useState<"ALL" | "AFC" | "NFC">("ALL");
   const [focusStrong, setFocusStrong] = useState(false);
   const [activeWeek, setActiveWeek] = useState(1);
-  const [activeEntry, setActiveEntry] = useState<EntryId>("entry-1");
   const [authState, setAuthState] = useState<AuthState>(awsConfigured ? "checking" : "unconfigured");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -142,7 +135,7 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
-  const [picks, setPicks] = useState<Record<EntryId, Picks>>({ "entry-1": {}, "entry-2": {} });
+  const [picks, setPicks] = useState<Picks>({});
   const [picksLoading, setPicksLoading] = useState(awsConfigured);
   const [savingKey, setSavingKey] = useState("");
   const [notice, setNotice] = useState("");
@@ -163,9 +156,9 @@ export default function App() {
     if (authState !== "signed-in") return;
 
     let active = true;
-    void Promise.all(entries.map(async ({ id }) => [id, await loadPicks(id)] as const))
+    void loadPicks()
       .then((loaded) => {
-        if (active) setPicks(Object.fromEntries(loaded) as Record<EntryId, Picks>);
+        if (active) setPicks(loaded);
       })
       .catch((error: unknown) => {
         if (active) setNotice(error instanceof Error ? error.message : "Could not load picks.");
@@ -183,23 +176,21 @@ export default function App() {
     const query = search.trim().toLowerCase();
 
     return teams.filter((team) => {
-      const matchesConference = conference === "ALL" || team.conference === conference;
       const matchesSearch =
         !query ||
         team.name.toLowerCase().includes(query) ||
         team.city.toLowerCase().includes(query) ||
         team.code.toLowerCase().includes(query);
 
-      return matchesConference && matchesSearch;
+      return matchesSearch;
     });
-  }, [conference, search]);
+  }, [search]);
 
-  const activePicks = picks[activeEntry];
   const pickedWeekByTeam = useMemo(() => {
     return Object.fromEntries(
-      Object.entries(activePicks).map(([week, teamCode]) => [teamCode, Number(week)]),
+      Object.entries(picks).map(([week, teamCode]) => [teamCode, Number(week)]),
     ) as Record<string, number>;
-  }, [activePicks]);
+  }, [picks]);
 
   function moveToWeek(week: number) {
     const nextWeek = Math.min(18, Math.max(1, week));
@@ -244,7 +235,7 @@ export default function App() {
 
   async function handleSignOut() {
     await signOut();
-    setPicks({ "entry-1": {}, "entry-2": {} });
+    setPicks({});
     setPicksLoading(false);
     setAuthState("signed-out");
     setAccountOpen(false);
@@ -258,27 +249,24 @@ export default function App() {
       return;
     }
 
-    const selected = activePicks[week] === team.code;
-    const key = `${activeEntry}-${week}-${team.code}`;
+    const selected = picks[week] === team.code;
+    const key = `${week}-${team.code}`;
     setSavingKey(key);
     setNotice("");
 
     try {
       if (selected) {
-        await removePick(activeEntry, week);
+        await removePick(week);
         setPicks((current) => {
-          const nextEntry = { ...current[activeEntry] };
-          delete nextEntry[week];
-          return { ...current, [activeEntry]: nextEntry };
+          const nextPicks = { ...current };
+          delete nextPicks[week];
+          return nextPicks;
         });
-        setNotice(`${team.name} removed from ${entries.find(({ id }) => id === activeEntry)?.label}, week ${week}.`);
+        setNotice(`${team.name} removed from week ${week}.`);
       } else {
-        await savePick(activeEntry, week, team.code);
-        setPicks((current) => ({
-          ...current,
-          [activeEntry]: { ...current[activeEntry], [week]: team.code },
-        }));
-        setNotice(`${team.name} saved for ${entries.find(({ id }) => id === activeEntry)?.label}, week ${week}.`);
+        await savePick(week, team.code);
+        setPicks((current) => ({ ...current, [week]: team.code }));
+        setNotice(`${team.name} saved for week ${week}.`);
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "The pick could not be saved.");
@@ -301,19 +289,7 @@ export default function App() {
             <b>2026</b>
           </div>
 
-          <div className="entry-tabs" aria-label="Survivor entry">
-            {entries.map((entry) => (
-              <button
-                key={entry.id}
-                className={activeEntry === entry.id ? "selected" : ""}
-                onClick={() => setActiveEntry(entry.id)}
-                aria-pressed={activeEntry === entry.id}
-              >
-                {entry.label}
-                <span>{Object.keys(picks[entry.id]).length}/18</span>
-              </button>
-            ))}
-          </div>
+          <div className="pick-count"><CheckCircle2 size={14} />{Object.keys(picks).length}<span>/ 18 picks</span></div>
 
           <button className={`account-button state-${authState}`} onClick={() => setAccountOpen(true)}>
             {authState === "signed-in" ? <Cloud size={15} /> : authState === "unconfigured" ? <CloudOff size={15} /> : <UserRound size={15} />}
@@ -332,19 +308,6 @@ export default function App() {
               onChange={(event) => setSearch(event.target.value)}
             />
           </label>
-
-          <div className="conference-filter" aria-label="Filter by conference">
-            {(["ALL", "AFC", "NFC"] as const).map((option) => (
-              <button
-                key={option}
-                className={conference === option ? "selected" : ""}
-                onClick={() => setConference(option)}
-                aria-pressed={conference === option}
-              >
-                {option === "ALL" ? "All" : option}
-              </button>
-            ))}
-          </div>
 
           <button
             className={`focus-toggle ${focusStrong ? "selected" : ""}`}
@@ -371,7 +334,7 @@ export default function App() {
 
         <div className="table-scroll" ref={tableScrollRef}>
           <table>
-            <caption className="sr-only">2026 NFL survivor planning board. Select a matchup cell to save that team as the active entry's pick for the week.</caption>
+            <caption className="sr-only">2026 NFL survivor planning board. Select a matchup cell to save that team as the pick for the week.</caption>
             <thead>
               <tr>
                 <th className="team-header" scope="col">
@@ -383,7 +346,7 @@ export default function App() {
                     <button onClick={() => moveToWeek(week)} aria-label={`Focus week ${week}`}>
                       <span>WEEK</span>
                       <strong>{String(week).padStart(2, "0")}</strong>
-                      {activePicks[week] && <i className="week-picked-dot" />}
+                      {picks[week] && <i className="week-picked-dot" />}
                     </button>
                   </th>
                 ))}
@@ -400,7 +363,7 @@ export default function App() {
                         <span className="team-token" style={{ backgroundColor: team.color }}>{team.code}</span>
                         <span className="team-identity">
                           <strong>{team.city} <b>{team.name}</b></strong>
-                          <small>{pickedWeek ? <><CheckCircle2 size={10} /> Used week {pickedWeek}</> : `${team.conference} ${team.division}`}</small>
+                          {pickedWeek && <small><CheckCircle2 size={10} /> Used week {pickedWeek}</small>}
                         </span>
                       </div>
                     </th>
@@ -410,9 +373,9 @@ export default function App() {
                         team={team}
                         week={week}
                         focused={activeWeek === week}
-                        selected={activePicks[week] === team.code}
+                        selected={picks[week] === team.code}
                         usedInWeek={pickedWeek}
-                        saving={savingKey === `${activeEntry}-${week}-${team.code}`}
+                        saving={savingKey === `${week}-${team.code}`}
                         onPick={() => void handlePick(team, week)}
                       />
                     ))}
@@ -462,10 +425,8 @@ export default function App() {
                 <div className="modal-icon success"><Cloud size={22} /></div>
                 <p className="modal-kicker">PRIVATE SYNC</p>
                 <h2 id="account-title">Your picks are synced</h2>
-                <p>Both survivor entries are saved in DynamoDB and available anywhere you sign in.</p>
-                <div className="entry-summary">
-                  {entries.map((entry) => <span key={entry.id}><b>{entry.label}</b>{Object.keys(picks[entry.id]).length} teams used</span>)}
-                </div>
+                <p>Your pick history is saved in DynamoDB and available anywhere you sign in.</p>
+                <div className="pick-summary"><b>{Object.keys(picks).length}</b><span>of 18 weeks selected</span></div>
                 <button className="primary-action secondary" onClick={() => void handleSignOut()}><LogOut size={16} /> Sign out</button>
               </>
             ) : (

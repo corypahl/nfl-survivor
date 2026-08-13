@@ -19,7 +19,6 @@ if (awsConfigured) {
   });
 }
 
-export type EntryId = "entry-1" | "entry-2";
 export type Picks = Record<number, string>;
 
 async function authToken() {
@@ -56,23 +55,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
-export async function loadPicks(entryId: EntryId) {
-  const data = await request<{ picks: Array<{ week: number; teamCode: string }> }>(
-    `/entries/${entryId}/picks`,
-  );
+export async function loadPicks() {
+  const data = await request<{ picks: Array<{ week: number; teamCode: string }> }>("/picks");
 
   return Object.fromEntries(data.picks.map((pick) => [pick.week, pick.teamCode])) as Picks;
 }
 
-export async function savePick(entryId: EntryId, week: number, teamCode: string) {
-  return request<{ week: number; teamCode: string }>(`/entries/${entryId}/picks/${week}`, {
+export async function savePick(week: number, teamCode: string) {
+  return request<{ week: number; teamCode: string }>(`/picks/${week}`, {
     method: "PUT",
     body: JSON.stringify({ teamCode }),
   });
 }
 
-export async function removePick(entryId: EntryId, week: number) {
-  return request<{ removed: boolean }>(`/entries/${entryId}/picks/${week}`, {
+export async function removePick(week: number) {
+  return request<{ removed: boolean }>(`/picks/${week}`, {
     method: "DELETE",
   });
 }
