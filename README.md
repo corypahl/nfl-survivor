@@ -1,6 +1,6 @@
 # Survivor Board
 
-A private, season-long NFL survivor pool planner built with React and Vite. The board maps every 2026 regular-season matchup into a grid and sorts teams by the selected week's rank-based win estimate, highest first.
+A private, season-long NFL survivor pool planner built with React and Vite. The board maps every 2026 regular-season matchup into a grid, sorts teams by the selected week's rank-based win estimate, and counts each team's remaining games with a 65%+ projection.
 
 Selecting a matchup saves that team as the pick for the week. A team already used is disabled for every other week, matching the once-per-season survivor rule.
 

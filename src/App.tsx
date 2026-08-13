@@ -65,6 +65,15 @@ function probabilityBand(probability: number) {
   return "risk";
 }
 
+function projectedWins(team: Team, fromWeek: number) {
+  return weeks.reduce((total, week) => {
+    if (week < fromWeek) return total;
+
+    const game = getGame(team.code, week);
+    return total + (game && estimatedWinProbability(team, game) >= 65 ? 1 : 0);
+  }, 0);
+}
+
 type GameCellProps = {
   team: Team;
   week: number;
@@ -205,7 +214,11 @@ export default function App() {
     const scrollContainer = tableScrollRef.current;
     const target = scrollContainer?.querySelector<HTMLElement>(`thead [data-week="${nextWeek}"]`);
     if (scrollContainer && target) {
-      scrollContainer.scrollTo({ left: Math.max(0, target.offsetLeft - 245), behavior: "smooth" });
+      const projectedHeader = scrollContainer.querySelector<HTMLElement>(".projected-header");
+      const frozenWidth = projectedHeader
+        ? projectedHeader.offsetLeft + projectedHeader.offsetWidth
+        : 245;
+      scrollContainer.scrollTo({ left: Math.max(0, target.offsetLeft - frozenWidth), behavior: "smooth" });
     }
   }
 
@@ -347,6 +360,11 @@ export default function App() {
                   <span>WEEK {String(activeWeek).padStart(2, "0")} WIN % ↓</span>
                   <strong>TEAM</strong>
                 </th>
+                <th className="projected-header" scope="col" title={`Games at 65%+ from week ${activeWeek} through week 18`}>
+                  <span>PROJECTED</span>
+                  <strong>WINS</strong>
+                  <small>65%+ LEFT</small>
+                </th>
                 {weeks.map((week) => (
                   <th key={week} scope="col" className={activeWeek === week ? "active-week" : ""} data-week={week}>
                     <button onClick={() => moveToWeek(week)} aria-label={`Focus week ${week}`}>
@@ -361,6 +379,7 @@ export default function App() {
             <tbody>
               {filteredTeams.map((team) => {
                 const pickedWeek = pickedWeekByTeam[team.code];
+                const remainingProjectedWins = projectedWins(team, activeWeek);
                 return (
                   <tr key={team.code} className={pickedWeek ? "used-team-row" : ""}>
                     <th className="team-cell" scope="row">
@@ -373,6 +392,14 @@ export default function App() {
                         </span>
                       </div>
                     </th>
+                    <td
+                      className="projected-cell"
+                      title={`${remainingProjectedWins} games at 65%+ from week ${activeWeek} through week 18`}
+                      aria-label={`${team.city} ${team.name}: ${remainingProjectedWins} projected wins remaining`}
+                    >
+                      <strong>{remainingProjectedWins}</strong>
+                      <span>65%+ left</span>
+                    </td>
                     {weeks.map((week) => (
                       <GameCell
                         key={week}

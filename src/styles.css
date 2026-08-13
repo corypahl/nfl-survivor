@@ -114,10 +114,13 @@ thead th.active-week .week-picked-dot { background: #111111; box-shadow: 0 0 0 2
 thead .team-header { left: 0; z-index: 6; width: 254px; min-width: 254px; padding: 0 17px; text-align: left; background: var(--ink); border-bottom-color: var(--ink); }
 thead .team-header span { display: block; color: #a0a0a0; }
 thead .team-header strong { color: #fff; font-size: 17px; }
+thead .projected-header { left: 254px; z-index: 5; width: 92px; min-width: 92px; background: #171717; box-shadow: 7px 0 18px rgba(0, 0, 0, 0.28); }
+thead .projected-header strong { font-size: 15px; }
+thead .projected-header small { margin-top: 3px; display: block; color: #7d7d7d; font-size: 6px; font-weight: 900; letter-spacing: 0.08em; }
 
 tbody tr { height: 64px; }
-tbody tr:hover .team-cell, tbody tr:hover .game-cell { filter: brightness(1.08); }
-.team-cell { position: sticky; left: 0; z-index: 2; width: 254px; min-width: 254px; padding: 0 13px; text-align: left; background: #111111; border-right: 1px solid #303030; border-bottom: 1px solid #2c2c2c; box-shadow: 7px 0 18px rgba(0, 0, 0, 0.28); }
+tbody tr:hover .team-cell, tbody tr:hover .projected-cell, tbody tr:hover .game-cell { filter: brightness(1.08); }
+.team-cell { position: sticky; left: 0; z-index: 2; width: 254px; min-width: 254px; padding: 0 13px; text-align: left; background: #111111; border-right: 1px solid #303030; border-bottom: 1px solid #2c2c2c; }
 .team-cell-inner { display: grid; grid-template-columns: 25px 36px minmax(0, 1fr); gap: 9px; align-items: center; }
 .rank-number { color: #777777; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; font-weight: 700; }
 .team-token { width: 36px; height: 36px; display: inline-grid; place-items: center; color: #fff; font-size: 9px; font-weight: 900; border: 2px solid rgba(255, 255, 255, 0.52); border-radius: 9px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
@@ -126,6 +129,9 @@ tbody tr:hover .team-cell, tbody tr:hover .game-cell { filter: brightness(1.08);
 .team-identity b { color: #f2f2f2; font-size: 11px; }
 .team-identity small { display: flex; align-items: center; gap: 4px; color: #9a9a9a; font-size: 8px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
 .used-team-row .team-identity small { color: #cecece; }
+.projected-cell { position: sticky; left: 254px; z-index: 2; width: 92px; min-width: 92px; padding: 0; text-align: center; background: #151515; border-right: 1px solid #3a3a3a; border-bottom: 1px solid #303030; box-shadow: 7px 0 18px rgba(0, 0, 0, 0.28); }
+.projected-cell strong { display: block; color: #f2f2f2; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 18px; line-height: 1.1; }
+.projected-cell span { margin-top: 3px; display: block; color: #818181; font-size: 7px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
 
 .game-cell { position: relative; width: 99px; min-width: 99px; height: 64px; padding: 0; background: #121212; border-right: 1px solid #303030; border-bottom: 1px solid #303030; transition: opacity 160ms ease, background-color 160ms ease; }
 .game-cell-button { position: relative; width: 100%; height: 100%; padding: 9px 9px; color: inherit; text-align: left; background: transparent; border: 0; cursor: pointer; }
@@ -219,6 +225,7 @@ tbody tr:hover .team-cell, tbody tr:hover .game-cell { filter: brightness(1.08);
   .focus-toggle { flex: 0 0 auto; }
   .week-jump { flex: 1; justify-content: center; }
   thead .team-header, .team-cell { width: 220px; min-width: 220px; }
+  thead .projected-header, .projected-cell { left: 220px; width: 84px; min-width: 84px; }
   .team-cell { padding: 0 10px; }
   .team-cell-inner { grid-template-columns: 21px 33px minmax(0, 1fr); gap: 7px; }
   .team-token { width: 33px; height: 33px; }
