@@ -175,16 +175,22 @@ export default function App() {
   const filteredTeams = useMemo(() => {
     const query = search.trim().toLowerCase();
 
-    return teams.filter((team) => {
-      const matchesSearch =
+    return teams
+      .filter((team) =>
         !query ||
         team.name.toLowerCase().includes(query) ||
         team.city.toLowerCase().includes(query) ||
-        team.code.toLowerCase().includes(query);
+        team.code.toLowerCase().includes(query),
+      )
+      .sort((left, right) => {
+        const leftGame = getGame(left.code, activeWeek);
+        const rightGame = getGame(right.code, activeWeek);
+        const leftProbability = leftGame ? estimatedWinProbability(left, leftGame) : -1;
+        const rightProbability = rightGame ? estimatedWinProbability(right, rightGame) : -1;
 
-      return matchesSearch;
-    });
-  }, [search]);
+        return rightProbability - leftProbability || left.rank - right.rank;
+      });
+  }, [activeWeek, search]);
 
   const pickedWeekByTeam = useMemo(() => {
     return Object.fromEntries(
@@ -338,7 +344,7 @@ export default function App() {
             <thead>
               <tr>
                 <th className="team-header" scope="col">
-                  <span>POWER RANK</span>
+                  <span>WEEK {String(activeWeek).padStart(2, "0")} WIN % ↓</span>
                   <strong>TEAM</strong>
                 </th>
                 {weeks.map((week) => (
@@ -359,7 +365,7 @@ export default function App() {
                   <tr key={team.code} className={pickedWeek ? "used-team-row" : ""}>
                     <th className="team-cell" scope="row">
                       <div className="team-cell-inner">
-                        <span className="rank-number">{String(team.rank).padStart(2, "0")}</span>
+                        <span className="rank-number" title={`Power rank ${team.rank}`}>#{String(team.rank).padStart(2, "0")}</span>
                         <span className="team-token" style={{ backgroundColor: team.color }}>{team.code}</span>
                         <span className="team-identity">
                           <strong>{team.city} <b>{team.name}</b></strong>
