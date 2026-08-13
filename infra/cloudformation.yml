@@ -1,0 +1,317 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Private pick tracking backend for the NFL Survivor Board.
+
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: https://corypahl.github.io
+    Description: Browser origin allowed to call the pick API (no trailing slash).
+
+Resources:
+  PicksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: owner
+          AttributeType: S
+        - AttributeName: pickKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: owner
+          KeyType: HASH
+        - AttributeName: pickKey
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: application
+          Value: nfl-survivor
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: nfl-survivor-users
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+        InviteMessageTemplate:
+          EmailSubject: Your Survivor Board sign-in
+          EmailMessage: "Your Survivor Board username is {username} and temporary password is {####}."
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+      UserPoolTags:
+        application: nfl-survivor
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: nfl-survivor-web
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  PicksFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PickTableAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt PicksTable.Arn
+
+  PicksFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Reads and writes the signed-in user's survivor picks.
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt PicksFunctionRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          PICKS_TABLE: !Ref PicksTable
+      Code:
+        ZipFile: |
+          const {
+            DynamoDBClient,
+            DeleteItemCommand,
+            PutItemCommand,
+            QueryCommand,
+          } = require("@aws-sdk/client-dynamodb");
+
+          const dynamo = new DynamoDBClient({});
+          const tableName = process.env.PICKS_TABLE;
+          const teamCodes = new Set([
+            "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
+            "DAL", "DEN", "DET", "GB", "HOU", "IND", "JAX", "KC",
+            "LA", "LAC", "LV", "MIA", "MIN", "NE", "NO", "NYG",
+            "NYJ", "PHI", "PIT", "SEA", "SF", "TB", "TEN", "WAS",
+          ]);
+
+          const json = (statusCode, body) => ({
+            statusCode,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+
+          const queryEntry = (owner, entryId) => dynamo.send(new QueryCommand({
+            TableName: tableName,
+            KeyConditionExpression: "#owner = :owner AND begins_with(#pickKey, :prefix)",
+            ExpressionAttributeNames: {
+              "#owner": "owner",
+              "#pickKey": "pickKey",
+            },
+            ExpressionAttributeValues: {
+              ":owner": { S: owner },
+              ":prefix": { S: `ENTRY#${entryId}#WEEK#` },
+            },
+            ConsistentRead: true,
+          }));
+
+          exports.handler = async (event) => {
+            try {
+              const owner = event.requestContext?.authorizer?.jwt?.claims?.sub;
+              const entryId = event.pathParameters?.entryId;
+              const week = event.pathParameters?.week ? Number(event.pathParameters.week) : null;
+
+              if (!owner) return json(401, { message: "Sign-in required." });
+              if (!/^entry-[12]$/.test(entryId || "")) return json(400, { message: "Invalid survivor entry." });
+              if (week !== null && (!Number.isInteger(week) || week < 1 || week > 18)) {
+                return json(400, { message: "Week must be between 1 and 18." });
+              }
+
+              if (event.requestContext.http.method === "GET") {
+                const result = await queryEntry(owner, entryId);
+                const picks = (result.Items || [])
+                  .map((item) => ({ week: Number(item.week.N), teamCode: item.teamCode.S }))
+                  .sort((a, b) => a.week - b.week);
+                return json(200, { picks });
+              }
+
+              const pickKey = `ENTRY#${entryId}#WEEK#${String(week).padStart(2, "0")}`;
+
+              if (event.requestContext.http.method === "DELETE") {
+                await dynamo.send(new DeleteItemCommand({
+                  TableName: tableName,
+                  Key: { owner: { S: owner }, pickKey: { S: pickKey } },
+                }));
+                return json(200, { removed: true });
+              }
+
+              const body = JSON.parse(event.body || "{}");
+              const teamCode = String(body.teamCode || "").toUpperCase();
+              if (!teamCodes.has(teamCode)) return json(400, { message: "Invalid NFL team." });
+
+              const current = await queryEntry(owner, entryId);
+              const duplicate = (current.Items || []).find(
+                (item) => item.teamCode.S === teamCode && Number(item.week.N) !== week,
+              );
+              if (duplicate) {
+                return json(409, {
+                  message: `${teamCode} was already used in week ${duplicate.week.N} for this entry.`,
+                });
+              }
+
+              await dynamo.send(new PutItemCommand({
+                TableName: tableName,
+                Item: {
+                  owner: { S: owner },
+                  pickKey: { S: pickKey },
+                  entryId: { S: entryId },
+                  week: { N: String(week) },
+                  teamCode: { S: teamCode },
+                  updatedAt: { S: new Date().toISOString() },
+                },
+              }));
+
+              return json(200, { week, teamCode });
+            } catch (error) {
+              console.error(error);
+              return json(500, { message: "The pick could not be saved." });
+            }
+          };
+
+  PicksApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: nfl-survivor-picks
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigin
+          - http://localhost:5173
+        AllowMethods:
+          - GET
+          - PUT
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+        MaxAge: 86400
+
+  PicksAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref PicksApi
+      AuthorizerType: JWT
+      IdentitySource:
+        - $request.header.Authorization
+      JwtConfiguration:
+        Audience:
+          - !Ref UserPoolClient
+        Issuer: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPool}
+      Name: cognito-user-pool
+
+  PicksIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref PicksApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt PicksFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  GetPicksRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref PicksApi
+      RouteKey: GET /entries/{entryId}/picks
+      AuthorizationType: JWT
+      AuthorizerId: !Ref PicksAuthorizer
+      Target: !Join [/, [integrations, !Ref PicksIntegration]]
+
+  PutPickRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref PicksApi
+      RouteKey: PUT /entries/{entryId}/picks/{week}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref PicksAuthorizer
+      Target: !Join [/, [integrations, !Ref PicksIntegration]]
+
+  DeletePickRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref PicksApi
+      RouteKey: DELETE /entries/{entryId}/picks/{week}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref PicksAuthorizer
+      Target: !Join [/, [integrations, !Ref PicksIntegration]]
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref PicksApi
+      StageName: $default
+      AutoDeploy: true
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PicksFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${PicksApi}/*
+
+Outputs:
+  ApiUrl:
+    Description: VITE_PICK_API_URL
+    Value: !Sub https://${PicksApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  AwsRegion:
+    Description: VITE_AWS_REGION
+    Value: !Ref AWS::Region
+  UserPoolId:
+    Description: VITE_COGNITO_USER_POOL_ID
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: VITE_COGNITO_USER_POOL_CLIENT_ID
+    Value: !Ref UserPoolClient
+  PicksTableName:
+    Description: DynamoDB table storing survivor picks
+    Value: !Ref PicksTable
